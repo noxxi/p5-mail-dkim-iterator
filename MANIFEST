@@ -1,0 +1,6 @@
+lib/Mail/DKIM/Iterator.pm
+Makefile.PL
+MANIFEST			This list of files
+scripts/validate-emails.pl
+t/load.t
+t/sign-and-verify.t
