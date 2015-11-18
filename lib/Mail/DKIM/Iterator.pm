@@ -26,14 +26,19 @@ use constant {
 };
 
 
+# create new object
 sub new {
     my ($class,%args) = @_;
     my $self = bless {
-	records => $args{dns} || {},
-	extract_sig => 1,
-	_hdrbuf => '',
+	records => $args{dns} || {}, # mapping (dnsname,dkim_key)
+	extract_sig => 1,            # extract signatures from mail header
+	# sig => [...],              # list of signatures from header or to sign
+	_hdrbuf => '',               # used while collecting the mail header
     }, $class;
+
     if (my $sig = delete $args{sign}) {
+	# signatures given for signing, either as [{},...] or {}
+	# add to self.sig
 	$sig = [$sig] if ref($sig) ne 'ARRAY';
 	$self->{extract_sig} = delete $args{sign_and_verify};
 	my $error;
@@ -46,120 +51,152 @@ sub new {
     return $self;
 }
 
+# Iterator: feed object with information and get back what to do next
 sub next {
     my $self = shift;
     my $rv;
     for my $arg (@_) {
 	if (ref($arg)) {
-	    # DKIM key for hosts
-	    $rv = _result($self,$arg);
+	    # ref: mapping (host,dkim_key)
+	    %{ $self->{records} } = (%{ $self->{records} }, %$arg) if $arg;
+	    $rv = _compute_result($self);
 	} else {
-	    # append data from mail
+	    # string: append data from mail
 	    if (defined $self->{_hdrbuf}) {
+		# header not fully read: append and try to find end of header
 		$self->{_hdrbuf} .= $arg;
 		$self->{_hdrbuf} =~m{(\r?\n)\1}g or last; # no end of header
-		_parse_header($self,
-		    $self->{header} = substr($self->{_hdrbuf},0,$+[0],''));
+
+		# Extract header into self.header and look for DKIM signatures
+		# inside. The rest of _hdrbuf will be appended as part of the
+		# body and the attribute _hdrbuf itself is no longer needed
+		$self->{header} = substr($self->{_hdrbuf},0,$+[0],'');
+		if ($self->{extract_sig}
+		    and my @sig = _parse_header($self->{header})) {
+		    push @{$self->{sig} ||= []}, @sig;
+		}
 		$arg = delete $self->{_hdrbuf};
 		_append_body($self,$arg) if $arg ne '';
+
 	    } else {
+		# header already read: append as part of body
 		_append_body($self,$arg);
 	    }
+
 	    if (!$self->{sig}) {
+		# No signatures found in body -> empty return list
 		$rv = [];
 	    } elsif ($self->{_bhdone}) {
-		$rv = _result($self);
+		# We have read enough of the body to compute the body hash for
+		# all signatures -> compute final result
+		$rv = _compute_result($self);
 	    }
 	}
     }
-    $rv = _result($self) if ! @_;
+    $rv = _compute_result($self) if ! @_;
+
+    # If we have no results yet just return that we need more data
     $rv or return ([],\'');
-    my (@dnsnames,$need_more_data);
+
+    # Extract the DNS names for the partial results where the DKIM key is needed
+    # and return the as todo. If the body hash could not yet computed for a
+    # signature mark also that we need more data
+    my (%dnsnames,$need_more_data);
     for(@$rv) {
 	$_->status and next;
 	my $sig = $_->sig;
-	if (!$sig->{b}) {
-	    $need_more_data = 1;
-	} else {
-	    $need_more_data = 1 if !$sig->{'bh:computed'};
-	    push @dnsnames, $_->dnsname;
-	}
+
+	# Need more data to compute the body hash?
+	$need_more_data = 1 if !$sig->{'bh:computed'};
+
+	# Need to get DKIM key to validate signature?
+	# Only if we have sig.b, i.e. an extracted signature from the header.
+	$dnsnames{ $_->dnsname }++ if $sig->{b};
     }
-    return ($rv,$need_more_data ? (\''):(),@dnsnames);
+
+    # return preliminary results and @todo
+    return ($rv,$need_more_data ? (\''):(),sort keys %dnsnames);
 }
 
 
-# compute result based on current data
-# might add more DKIM records to validate signatures
-sub _result {
-    my ($self,$more_records) = @_;
-    my $records = $self->{records};
-    %$records = (%$records,%$more_records) if $more_records;
+# Compute result based on current data.
+# This might add more DKIM records to validate signatures.
+sub _compute_result {
+    my $self = shift;
     return if defined $self->{_hdrbuf}; # need more header
     return [] if !$self->{sig};         # nothing to verify
     return if ! $self->{_bhdone};       # need more body
 
     my @rv;
     for my $sig (@{$self->{sig}}) {
+
+	# use final result if we have one already
+	if ($sig->{':result'}) {
+	    push @rv, $sig->{':result'};
+	    next;
+	}
+
 	if (!$sig->{b}) {
-	    # not for verification but for signing
-	    if ($sig->{':result'}) {
-		# have already result
-		push @rv, $sig->{':result'}
-	    } elsif (!$sig->{'bh:computed'}) {
-		# incomplete
+	    # sig is not for verification but for signing
+	    if (!$sig->{'bh:computed'}) {
+		# incomplete: still need more data to compute signature
 		push @rv, Mail::DKIM::Iterator::SignRecord->new($sig);
 	    } else {
-		# compute
+		# complete: compute signature and save it in :result
 		my $err;
 		my $dkim_sig = sign($sig,$sig->{':key'},$self->{header},\$err);
-		$sig->{':result'} = Mail::DKIM::Iterator::SignRecord->new(
-		    $dkim_sig ? ($sig,$dkim_sig,DKIM_SUCCESS)
-			: ($sig,undef,DKIM_PERMFAIL,$err)
-		);
-		push @rv,$sig->{':result'};
+		push @rv, $sig->{':result'} =
+		    Mail::DKIM::Iterator::SignRecord->new(
+			$dkim_sig ? ($sig,$dkim_sig,DKIM_SUCCESS)
+			    : ($sig,undef,DKIM_PERMFAIL,$err)
+		    );
 	    }
 	    next;
 	}
 
 	if ($sig->{error}) {
-	    push @rv, Mail::DKIM::Iterator::VerifyRecord->new(
-		$sig,
-		($sig->{s}//'UNKNOWN')."_domainkey".($sig->{d}//'UNKNOWN'),
-		DKIM_INVALID_HDR,
-		$sig->{error}
-	    );
+	    # something wrong with the DKIM-Signature header, return error
+	    push @rv, $sig->{':result'} =
+		Mail::DKIM::Iterator::VerifyRecord->new(
+		    $sig,
+		    ($sig->{s}//'UNKNOWN')."_domainkey".($sig->{d}//'UNKNOWN'),
+		    DKIM_INVALID_HDR,
+		    $sig->{error}
+		);
 	    next;
 	}
 
 	my $dns = "$sig->{s}._domainkey.$sig->{d}";
 
 	if ($sig->{x} && $sig->{x} < time()) {
-	    push @rv, Mail::DKIM::Iterator::VerifyRecord
+	    push @rv, $sig->{':result'} = Mail::DKIM::Iterator::VerifyRecord
 		->new($sig,$dns, DKIM_SOFTFAIL, "signature e[x]pired");
 	    next;
 	}
 
-	if (my $txt = $records->{$dns}) {
+	if (my $txt = $self->{records}{$dns}) {
 	    if (!ref($txt) || ref($txt) eq 'ARRAY') {
+		# Take the first syntactically valid DKIM key from the list of
+		# TXT records.
 		my $error = "no TXT records";
 		for(ref($txt) ? @$txt:$txt) {
 		    if (my $r = parse_dkimkey($_,\$error)) {
-			$records->{$dns} = $txt = $r;
+			$self->{records}{$dns} = $txt = $r;
 			$error = undef;
 			last;
 		    }
 		}
 		if ($error) {
-		    $records->{$dns} = $txt = { permfail => $error };
+		    $self->{records}{$dns} = $txt = { permfail => $error };
 		}
 	    }
-	    # use DKIM record for validation
-	    push @rv, Mail::DKIM::Iterator::VerifyRecord
-		->new($sig,$dns, _verify_sig($self,$sig,$txt));
-	} elsif (exists $records->{$dns}) {
+	    # Use DKIM key to verify the signature and created final result.
+	    push @rv, $sig->{':result'} = Mail::DKIM::Iterator::VerifyRecord
+		->new($sig,$dns, _verify_sig($sig,$txt));
+
+	} elsif (exists $self->{records}{$dns}) {
 	    # cannot get DKIM record
-	    push @rv, Mail::DKIM::Iterator::VerifyRecord
+	    push @rv, $sig->{':result'} = Mail::DKIM::Iterator::VerifyRecord
 		->new($sig,$dns, DKIM_TEMPFAIL, "dns lookup failed");
 	} else {
 	    # no DKIM record yet known for $dns
@@ -169,6 +206,8 @@ sub _result {
     return \@rv;
 }
 
+# Parse DKIM-Signature value into hash and fill in necessary default values.
+# Input can be string or hash.
 sub parse_signature {
     my ($v,$error,$for_signing) = @_;
     $v = _parse_taglist($v,$error) or return if !ref($v);
@@ -260,6 +299,8 @@ sub parse_signature {
     return $v;
 }
 
+# Parse DKIM key into hash and fill in necessary default values.
+# Input can be string or hash.
 sub parse_dkimkey {
     my ($v,$error) = @_;
     $v = _parse_taglist($v,$error) or return if !ref($v);
@@ -296,6 +337,11 @@ sub parse_dkimkey {
     return;
 }
 
+# Finalize signature, i.e add the 'b' parameter.
+# Input is signature (hash or string), the private key (PEM or
+# Crypto::OpenSSL::RSA object) and the mail header.
+# Output is "DKIM-Signature: .... " string with proper line length so that it
+# can be inserted into the mail header.
 sub sign {
     my ($sig,$key,$hdr,$error) = @_;
     $sig = parse_signature($sig,$error,1) or return;
@@ -373,26 +419,11 @@ sub sign {
     return $dkh;
 }
 
-{
-    my %sig_prefix = (
-	'sha1'   => pack("H*","3021300906052B0E03021A05000414"),
-	'sha256' => pack("H*","3031300d060960864801650304020105000420"),
-    );
-
-    # EMSA-PKCS1-v1_5
-    # RFC 3447 9.2
-    sub _emsa_pkcs1_v15 {
-	my ($algo,$hash,$len) = @_;
-	my $t = ($sig_prefix{$algo} || die "unsupport digest $algo") . $hash;
-	my $pad = $len - length($t) -3;
-	$pad < 8 and die;
-	return "\x00\x01" . ("\xff" x $pad) . "\x00" . $t;
-    }
-
-}
-
+# Verify a DKIM signature (hash from parse_signature) using a DKIM key (hash
+# from parse_dkimkey). Output is (error_code,error_string) or simply
+# (DKIM_SUCCESS) in case of no error.
 sub _verify_sig {
-    my ($self,$sig,$param) = @_;
+    my ($sig,$param) = @_;
     return (DKIM_PERMFAIL,"none or invalid dkim record") if ! %$param;
     return (DKIM_TEMPFAIL,$param->{tempfail}) if $param->{tempfail};
     return (DKIM_PERMFAIL,$param->{permfail}) if $param->{permfail};
@@ -433,31 +464,42 @@ sub _verify_sig {
     return (DKIM_SUCCESS);
 }
 
+# parse the header and extract
 sub _parse_header {
-    my ($self,$hdr) = @_;
-
-    while ( $self->{extract_sig}
-	&& $hdr =~m{^(DKIM-Signature:\s*(.*\n(?:[ \t].*\n)*))}mig ) {
-
+    my $hdr = shift;
+    my @sig;
+    while ( $hdr =~m{^(DKIM-Signature:\s*(.*\n(?:[ \t].*\n)*))}mig ) {
 	my $dkh = $1; # original value to exclude it when computing hash
 
 	my $error;
-	my $sig = parse_signature($2,\$error) or do {
-	    push @{$self->{sig}},{
-		error => "invalid DKIM-Signature header: $error",
-	    };
-	    next;
-	};
+	my $sig = parse_signature($2,\$error);
+	if ($sig) {
+	    $sig->{'h:hash'} = _compute_hdrhash($hdr,
+		$sig->{'h:list'},$sig->{'a:hash'},$sig->{'c:hdr'},$dkh);
+	} else {
+	    $sig = { error => "invalid DKIM-Signature header: $error" };
+	}
 
-	$sig->{'h:hash'} = _compute_hdrhash($hdr,
-	    $sig->{'h:list'},$sig->{'a:hash'},$sig->{'c:hdr'},$dkh);
-	push @{$self->{sig}},$sig;
+	push @sig,$sig;
     }
-
-    $self->{sig} or return;
-
-    1;
+    return @sig;
 }
+
+{
+    # EMSA-PKCS1-v1_5 encapsulation, see RFC 3447 9.2
+    my %sig_prefix = (
+	'sha1'   => pack("H*","3021300906052B0E03021A05000414"),
+	'sha256' => pack("H*","3031300d060960864801650304020105000420"),
+    );
+    sub _emsa_pkcs1_v15 {
+	my ($algo,$hash,$len) = @_;
+	my $t = ($sig_prefix{$algo} || die "unsupport digest $algo") . $hash;
+	my $pad = $len - length($t) -3;
+	$pad < 8 and die;
+	return "\x00\x01" . ("\xff" x $pad) . "\x00" . $t;
+    }
+}
+
 
 {
 
@@ -490,6 +532,7 @@ sub _parse_header {
 	sha256 => sub { Digest::SHA->new(256) },
     );
 
+    # compute the hash over the header
     sub _compute_hdrhash {
 	my ($hdr,$headers,$hash,$canon,$dkh) = @_;
 	#warn "XXX $hash | $canon";
@@ -585,6 +628,8 @@ sub _parse_header {
 	relaxed => sub { $bodyc->(1) },
     );
 
+    # add data to the body
+    # Once we have enough data to compute all bodyhashes self._bhdone is set
     sub _append_body {
 	my ($self,$buf) = @_;
 	my $bh = $self->{_bodyhash} ||= do {
@@ -638,6 +683,12 @@ sub _parse_header {
 
 
 {
+
+    # _parse_taglist($val,\$error)
+    # Parse a tag-list, like in the DKIM signature and in the DKIM key.
+    # Returns a hash of the parsed list. If error occur $error will be set and
+    # undef will be returned.
+
     my $fws = qr{
 	[ \t]+ (?:\r?\n[ \t]+)? |
 	\r?\n[ \t]+
@@ -647,20 +698,21 @@ sub _parse_header {
     my $tagval = qr{$tval(?:$fws$tval)*};
     my $end = qr{(?:\r?\n)?\z};
     my $delim_or_end = qr{ $fws? (?: $end | ; (?: $fws?$end|)) }x;
+
     sub _parse_taglist {
-	my ($v,$w) = @_;
+	my ($v,$error) = @_;
 	my %v;
 	while ( $v =~m{\G $fws? (?:
 	    ($tagname) $fws?=$fws? ($tagval?) $delim_or_end |
 	    | (.+)
 	)}xgcs) {
 	    if (defined $3) {
-		$$w = "invalid data at end: '$3'";
+		$$error = "invalid data at end: '$3'";
 		return;
 	    }
 	    last if ! defined $1;
 	    exists($v{$1}) && do {
-		$$w = "duplicate key $1";
+		$$error = "duplicate key $1";
 		return;
 	    };
 	    $v{$1} = $2;
@@ -704,6 +756,7 @@ sub _decodeQP {
 }
 
 
+# ResultRecord for verification.
 package Mail::DKIM::Iterator::VerifyRecord;
 sub new {
     my $class = shift;
@@ -715,6 +768,7 @@ sub dnsname   { shift->[1] }
 sub status    { shift->[2] }
 sub error     { shift->[3] }
 
+# ResultRecord for signing.
 package Mail::DKIM::Iterator::SignRecord;
 sub new {
     my $class = shift;
