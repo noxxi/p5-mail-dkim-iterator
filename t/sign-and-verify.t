@@ -3,8 +3,9 @@ use warnings;
 use Test::More;
 use Mail::DKIM::Iterator;
 
-plan tests => 13;
+plan tests => 16;
 
+# basic tests with different canonicalizations and algorithms
 for my $c (qw(
     simple/simple
     simple/relaxed
@@ -24,14 +25,54 @@ for my $c (qw(
     }
 }
 
-# expect verification fail because of wrong pubkey
-my $ok = eval {
-    my $m = sign([mail()], s => 'bad');
-    verify([$m],dns());
-};
-my $err = $@ || ($ok ? '':'unknown error');
-is( $err,"bad status status=perm-fail error=header sig mismatch\n",
-    "wrong pubkey");
+# expect verification perm-fail because of wrong pubkey
+{
+    my $ok = eval {
+	my $m = sign([mail()], s => 'bad');
+	verify([$m],dns());
+    };
+    my $err = $@ || ($ok ? '':'unknown error');
+    is( $err,"status status=perm-fail error=header sig mismatch\n",
+	"wrong pubkey");
+}
+
+# expect verification soft-fail because signature is expired
+{
+    my $ok = eval {
+	my $m = sign([mail()], x => time()-20 );
+	verify([$m],dns());
+    };
+    my $err = $@ || ($ok ? '':'unknown error');
+    is( $err,"status status=soft-fail error=signature e[x]pired\n",
+	"signature expired");
+}
+
+# expect verification temp-fail because DNS lookup failed
+{
+    my $ok = eval {
+	my $m = sign([mail()], s => 'no-dns' );
+	verify([$m],dns());
+    };
+    my $err = $@ || ($ok ? '':'unknown error');
+    is( $err,"status status=temp-fail error=dns lookup failed\n",
+	"DNS lookup failed");
+}
+
+# expect verification perm-fail because DKIM key has invalid syntax
+{
+    my $ok = eval {
+	my $m = sign([mail()], s => 'invalid' );
+	verify([$m],dns());
+    };
+    my $err = $@ || ($ok ? '':'unknown error');
+    is( $err,"status status=perm-fail error=invalid or empty DKIM record\n",
+	"DKIM key invalid syntax");
+}
+
+
+############################################################################
+# functions
+############################################################################
 
 # create signature
 sub sign {
@@ -68,13 +109,17 @@ sub verify {
     }
     $rv || die "no result after end of mail\n";
     @$rv == 1 or die "expected a single result, got ".int(@$rv)."\n";
-    defined $rv->[0]->status and die "expected status undef\n";
+    if (defined $rv->[0]->status) {
+	# must be some kind of error because we did not yet feed DKIM records
+	die "status status=" . $rv->[0]->status
+	    . " error=" . $rv->[0]->error . "\n";
+    }
 
     # feed DNS record into dkim object
     $rv = $dkim->result($dns);
     @$rv == 1 or die "expected a single result, got ".int(@$rv)."\n";
     $rv->[0]->status == DKIM_SUCCESS or die 
-	"bad status status=" . ($rv->[0]->status//'<undef>')
+	"status status=" . ($rv->[0]->status//'<undef>')
 	. " error=" . ($rv->[0]->error//'') . "\n";
     1;
 }
@@ -106,11 +151,17 @@ DKIM_KEY
     'bad._domainkey.example.com' => <<'DKIM_KEY',
 v=DKIM1; p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDwIRP/UC3SBsEmGqZ9ZJW3/DkMoGeLnQg1fWn7/zYtIxN2SnFCjxOCKG9v3b4jYfcTNh5ijSsq631uBItLa7od+v/RtdC2UzJ1lWT947qR+Rcac2gbto/NMqJ0fzfVjH4OuKhitdY9tf6mcwGjaNBcWToIMmPSPDdQPNUYckcQ2QIDAQAB
 DKIM_KEY
+    'no-dns._domainkey.example.com' => undef,
+    'invalid._domainkey.example.com' => "And now for something completely different",
 }}
 
+
+# Mail contains empty lines, multiple white-space.. so that simple and
+# relaxed canonicalizations are different
 sub mail { <<'MAIL'; }
 From: me
-To: you
+To:  you
+To:you-too
 Subject: whatever
 Message-Id: <foo@bar.com>
 In-Reply-To:
