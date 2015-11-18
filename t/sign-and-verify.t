@@ -16,7 +16,7 @@ for my $c (qw(
 )) {
     for my $algo (qw(rsa-sha1 rsa-sha256)) {
 	#diag("c=$c a=$algo");
-	my $ok = eval {
+	my $ok = do {
 	    my $m = sign([ mail() ], c => $c, a => $algo );
 	    verify([$m],dns());
 	};
@@ -77,6 +77,7 @@ for my $c (qw(
 # create signature
 sub sign {
     my ($mail,%args) = @_;
+    push @$mail,'';
     my $dkim = Mail::DKIM::Iterator->new( sign => {
 	d => 'example.com',
 	s => 'good',
@@ -85,38 +86,49 @@ sub sign {
 	%args,
     });
 
-    # sign the mail
     my $rv;
-    for(@$mail,'') {
-	$rv = $dkim->append($_) and last;
+    my @todo = \'';
+    my $total_mail;
+    while (@todo) {
+	my $todo = shift(@todo);
+	if (ref($todo)) {
+	    die "no more data after end of mail" if !@$mail;
+	    $total_mail .= $mail->[0];
+	    ($rv,@todo) = $dkim->next(shift(@$mail));
+	} else {
+	    die "there should no no DNS lookups needed for signing\n";
+	}
     }
+    @todo && die "still things to do at end of mail\n";
     $rv || die "no result after end of mail\n";
+
     @$rv == 1 or die "expected a single result, got ".int(@$rv)."\n";
     $rv->[0]->status == DKIM_SUCCESS 
 	or die "unexpected status ".( $rv->[0]->status // '<undef>' )."\n";
     my $dkim_sig = $rv->[0]->signature;
-    return $dkim_sig . join("",@$mail);
+    return $dkim_sig . $total_mail;
 }
 
 # validate signature
 sub verify {
     my ($mail,$dns) = @_;
-
+    push @$mail,'';
     my $dkim = Mail::DKIM::Iterator->new;
+
     my $rv;
-    for(@$mail,'') {
-	$rv = $dkim->append($_) and last;
-    }
-    $rv || die "no result after end of mail\n";
-    @$rv == 1 or die "expected a single result, got ".int(@$rv)."\n";
-    if (defined $rv->[0]->status) {
-	# must be some kind of error because we did not yet feed DKIM records
-	die "status status=" . $rv->[0]->status
-	    . " error=" . $rv->[0]->error . "\n";
+    my @todo = \'';
+    while (@todo) {
+	my $todo = shift(@todo);
+	if (ref($todo)) {
+	    die "no more data after end of mail" if !@$mail;
+	    ($rv,@todo) = $dkim->next(shift(@$mail));
+	} else {
+	    ($rv,@todo) = $dkim->next({ $todo => $dns->{$todo} });
+	}
     }
 
-    # feed DNS record into dkim object
-    $rv = $dkim->result($dns);
+    @todo && die "still things to do at end of mail\n";
+    $rv || die "no result after end of mail\n";
     @$rv == 1 or die "expected a single result, got ".int(@$rv)."\n";
     $rv->[0]->status == DKIM_SUCCESS or die 
 	"status status=" . ($rv->[0]->status//'<undef>')

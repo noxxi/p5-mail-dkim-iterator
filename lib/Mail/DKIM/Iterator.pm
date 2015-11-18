@@ -1,7 +1,7 @@
 package Mail::DKIM::Iterator;
 use v5.10.0;
 
-our $VERSION = '0.010';
+our $VERSION = '0.011';
 
 use strict;
 use warnings;
@@ -46,28 +46,52 @@ sub new {
     return $self;
 }
 
-# append data from mail
-# returns nothing if it needs more input data
-# returns partial or full response if it got enough input data
-sub append {
-    my ($self,$buf) = @_;
-    if (defined $self->{_hdrbuf}) {
-	$self->{_hdrbuf} .= $buf;
-	$self->{_hdrbuf} =~m{(\r?\n)\1}g or return; # no end of header
-	_parse_header($self,
-	    $self->{header} = substr($self->{_hdrbuf},0,$+[0],''));
-	$buf = delete $self->{_hdrbuf};
-	_append_body($self,$buf) if $buf ne '';
-    } else {
-	_append_body($self,$buf);
+sub next {
+    my $self = shift;
+    my $rv;
+    for my $arg (@_) {
+	if (ref($arg)) {
+	    # DKIM key for hosts
+	    $rv = _result($self,$arg);
+	} else {
+	    # append data from mail
+	    if (defined $self->{_hdrbuf}) {
+		$self->{_hdrbuf} .= $arg;
+		$self->{_hdrbuf} =~m{(\r?\n)\1}g or last; # no end of header
+		_parse_header($self,
+		    $self->{header} = substr($self->{_hdrbuf},0,$+[0],''));
+		$arg = delete $self->{_hdrbuf};
+		_append_body($self,$arg) if $arg ne '';
+	    } else {
+		_append_body($self,$arg);
+	    }
+	    if (!$self->{sig}) {
+		$rv = [];
+	    } elsif ($self->{_bhdone}) {
+		$rv = _result($self);
+	    }
+	}
     }
-    return [] if !$self->{sig}; # nothing to verify or sign
-    return $self->result if $self->{_bhdone};
+    $rv = _result($self) if ! @_;
+    $rv or return ([],\'');
+    my (@dnsnames,$need_more_data);
+    for(@$rv) {
+	$_->status and next;
+	my $sig = $_->sig;
+	if (!$sig->{b}) {
+	    $need_more_data = 1;
+	} else {
+	    $need_more_data = 1 if !$sig->{'bh:computed'};
+	    push @dnsnames, $_->dnsname;
+	}
+    }
+    return ($rv,$need_more_data ? (\''):(),@dnsnames);
 }
+
 
 # compute result based on current data
 # might add more DKIM records to validate signatures
-sub result {
+sub _result {
     my ($self,$more_records) = @_;
     my $records = $self->{records};
     %$records = (%$records,%$more_records) if $more_records;
@@ -717,7 +741,8 @@ Iterativ validation of DKIM records or DKIM signing of mails.
 
 =head1 SYNOPSIS
 
-    # Verify all DKIM signature headers found within a mail
+    # ---- Verify all DKIM signature headers found within a mail --------------
+
     my $mailfile = $ARGV[0];
 
     use Mail::DKIM::Iterator;
@@ -726,54 +751,38 @@ Iterativ validation of DKIM records or DKIM signing of mails.
     my %dnscache;
     my $res = Net::DNS::Resolver->new;
 
-    # Create a new Mail::DKIM::Iterator object and feed pieces of the mail
-    # into it until one gets the feedback that these are enough data to
-    # verify the signature.
-    # If no usable DKIM-Signature header was found enough means already at
-    # the end of the mail header, otherwise it usually needs the full mail
-    # (unless there is a length limit for the body in the signature).
+    # Create a new Mail::DKIM::Iterator object.
+    # Feed parts from the mail and results from DNS lookups into the object
+    # until we have the final result.
 
     open( my $fh,'<',$mailfile) or die $!;
     my $dkim = Mail::DKIM::Iterator->new(dns => \%dnscache);
     my $rv;
-    while (1) {
-	if (read($fh,$buf,8192)) {
-	    $rv = $dkim->append($buf) and last;
+    my @todo = \'';
+    while (@todo) {
+	my $todo = shift(@todo);
+	if (ref($todo)) {
+	    # need more data from mail
+	    if (read($fh,$buf,8192)) {
+		($rv,@todo) = $dkim->next($buf);
+	    } else {
+		($rv,@todo) = $dkim->next('');
+	    }
 	} else {
-	    $rv = $dkim->append('');
-	    last;
+	    # need a DNS lookup
+	    if (my $q = $res->query($todo,'TXT')) {
+		# successful lookup
+		($rv,@todo) = $dkim->next({
+		    $todo => [
+			map { $_->type eq 'TXT' ? ($_->txtdata) : () }
+			$q->answer
+		    ]
+		});
+	    } else {
+		# failed lookup
+		($rv,@todo) = $dkim->next({ $todo => undef });
+	    }
 	}
-    }
-
-    # Once all signature headers are found and enough body is read so that
-    # the body hash is known we need the DKIM keys found in the DNS. The
-    # result we have so far are returned in a VerifyRecord for each
-    # DKIM-Signature in the mail header. If $r->status is not yet # defined
-    # we need to look up the TXT record and feed it into the
-    # Mail::DKIM::Iterator object using
-    #   $dkim->verify({ dnsname => $dkim_record }).
-    # We do that until all names are resolved or we got error in resolving
-    # the name.
-
-    check_rv:
-    my $retry = 0;
-    my %dns;
-    for(@$rv) {
-	defined $_->status and next; # got already record
-	my $dnsname = $_->dnsname;
-	$retry++;
-	if (my $q = $res->query($dnsname,'TXT')) {
-	    $dns{$dnsname} = [
-		map { $_->type eq 'TXT' ? ($_->txtdata) : () }
-		$q->answer
-	    ];
-	} else {
-	    $dns{$dnsname} = undef;
-	}
-    }
-    if ($retry) {
-	$rv = $dkim->verify(\%dns);
-	goto check_rv;
     }
 
     # This final result consists of a VerifyRecord for each DKIM signature
@@ -800,27 +809,31 @@ Iterativ validation of DKIM records or DKIM signing of mails.
     }
 
 
-    # Create signature for a mail
+    # ---- Create signature for a mail ----------------------------------------
+
     my $mailfile = $ARGV[0];
 
     use Mail::DKIM::Iterator;
 
-    my $dkim = Mail::DKIM::Iterator->new(sign => [{
+    my $dkim = Mail::DKIM::Iterator->new(sign => {
 	c => 'relaxed/relaxed',
 	a => 'rsa-sha1',
 	d => 'example.com',
 	s => 'foobar',
 	':key' => ... PEM string for private key or Crypt::OpenSSL::RSA object
-    }]);
+    });
 
     open(my $fh,'<',$mailfile) or die $!;
     my $rv;
-    while (!$rv || grep { !defined $_->status } @$rv) {
-	if (read($fh, my $buf,8192)) {
-	    $rv = $dkim->append($buf);
+    my @todo = \'';
+    while (@todo) {
+	my $todo = shift @todo;
+	die "DNS lookups should not be needed here" if !ref($todo);
+	# need more data from mail
+	if (read($fh,$buf,8192)) {
+	    ($rv,@todo) = $dkim->next($buf);
 	} else {
-	    $rv = $dkim->append('');
-	    last;
+	    ($rv,@todo) = $dkim->next('');
 	}
     }
     for(@$rv) {
@@ -887,32 +900,31 @@ additionally to creating new signatures if C<sign> is used.
 =back
 
 
-=item $dkim->append($buffer) -> $rv
+=item $dkim->next([ $mailchunk | \%dns ]*) -> ($rv,@todo)
 
-This is used to append a new chunk from the mail.
-To signal the end of the mail C<$buffer> should be C<''>.
+This is used to add new information to the DKIM object.
+These information can be a new chunk from the mail (string), the signal for end
+of mail input (empty string C<''>) or a mapping between the name and the record
+for a DKIM key.
 
-If more data are needed C<$rv> will be undef.
-Otherwise C<$rv> will be a list of result records, one for each DKIM-Signature
-record in the mail and in the same order. If no such headers are found this list
-is empty. For details of the result records see C<result>.
+If there are still things todo to get the final result C<@todo> will get the
+necessary instructions, either as a string containing a DNS name which should be
+used to lookup a DKIM key record, or a reference to a scalar C<\''> to signal
+that more data from the mail are needed.
+C<$rv> might already contain preliminary results.
 
-=item $dkim->result([\%dns]) -> $rv
-
-If C<%dns> is given it will be used to update the internal mappings between DNS
-name and DKIM record (see C<new>) which then will be used to update any
-record validations. The result will be returned, i.e. undef if still data are
-needed from the mail or C<$rv> with a list of records. Each of these records is
-either a VerifyRecord (in case of DKIM verification) or a SignRecord (in case of
-DKIM signing).
+Once the final result could be computed C<@todo> will be empty and C<$rv> will
+contain the results as a list. Each of the objects in the list is either a
+VerifyRecord (in case of DKIM verification) or a SignRecord (in case of DKIM
+signing).
 
 Both VerifyRecord and SignRecord have the following methods:
 
 =over 8
 
-=item status - undef if no DKIM result is yet known for the record. Otherwise
-any of DKIM_SUCCESS, DKIM_INVALID_HDR, DKIM_TEMPFAIL, DKIM_SOFTFAIL,
-DKIM_PERMFAIL.
+=item status - undef if no DKIM result is yet known for the record (preliminary
+result). Otherwise any of DKIM_SUCCESS, DKIM_INVALID_HDR, DKIM_TEMPFAIL,
+DKIM_SOFTFAIL, DKIM_PERMFAIL.
 
 =item error - an error description in case the status shows an error, i.e. with
 all status values except undef and DKIM_SUCCESS.
@@ -932,11 +944,6 @@ A SignRecord has additionally the following methods:
 =item signature - the DKIM-Signature value, only if DKIM_SUCCESS
 
 =back
-
-
-If any of the result records contains a status of undef the user should do a DNS
-lookup for a TXT record for the name given in the record and feed it back into
-the object using C<verify>.
 
 =back
 

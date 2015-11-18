@@ -17,6 +17,9 @@ read these names from stdin.
 Usage: $0 [options] [dir|mbox]
 Options: 
    -h|--help: this help
+
+USAGE
+    exit(2);
 }
 
 GetOptions(
@@ -45,29 +48,29 @@ while ( my $mail = $mbox->nextmail ) {
     $dkim = Mail::DKIM::Iterator->new(dns => \%globdns);
 
     my $rv;
-    while (1) {
-	# will return true once we have enough data
-	$rv = $dkim->append($buf) and last;
-	if ( $buf eq '') {
-	    print STDERR " WARN DKIM->append still undef at eof\n";
-	    next mail;
-	}
-	$buf = $mbox->nextdata;
-    }
-
-    # resolve all DNS records we need
-    my %dns;
-    for(my $i=0;$i<@$rv;$i++) {
-	defined $rv->[$i]->status and next; # have record already
-	my $dnsname = $rv->[$i]->dnsname;
-	if (my $q = $res->query($dnsname,'TXT')) {
-	    $dns{$dnsname} = [ map { $_->type eq 'TXT' ? ($_->txtdata) : () } $q->answer ];
+    my @todo = \'';
+    while (@todo) {
+	my $todo = shift(@todo);
+	if (ref($todo)) {
+	    # need more data from mail
+	    $buf //= $mbox->nextdata;
+	    ($rv,@todo) = $dkim->next($buf);
+	    $buf = undef;
 	} else {
-	    $dns{$dnsname} = undef;
+	    # need a DNS lookup
+	    if (my $q = $res->query($todo,'TXT')) {
+		# successful lookup
+		($rv,@todo) = $dkim->next({
+		    $todo => [
+			map { $_->type eq 'TXT' ? ($_->txtdata) : () }
+			$q->answer
+		    ]
+		});
+	    } else {
+		# failed lookup
+		($rv,@todo) = $dkim->next({ $todo => undef });
+	    }
 	}
-	$rv = $dkim->result(\%dns);
-	$i = 0;
-	redo;
     }
 
     for(@$rv) {

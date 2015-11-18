@@ -4,3 +4,5 @@ MANIFEST			This list of files
 scripts/validate-emails.pl
 t/load.t
 t/sign-and-verify.t
+Changes
+README

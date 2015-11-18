@@ -1,0 +1,5 @@
+0.011 - 2015/11/18
+- make interface more similar to Mail::SPF::Iterator, i.e. everything is done
+  through a single method C<next>
+0.010 - 2015/11/17
+- initial release
