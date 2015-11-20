@@ -1,7 +1,7 @@
 package Mail::DKIM::Iterator;
 use v5.10.0;
 
-our $VERSION = '0.011';
+our $VERSION = '0.012';
 
 use strict;
 use warnings;
@@ -26,12 +26,14 @@ use constant {
 };
 
 
+
 # create new object
 sub new {
     my ($class,%args) = @_;
     my $self = bless {
 	records => $args{dns} || {}, # mapping (dnsname,dkim_key)
 	extract_sig => 1,            # extract signatures from mail header
+	filter => $args{filter},     # filter which signatures are relevant
 	# sig => [...],              # list of signatures from header or to sign
 	_hdrbuf => '',               # used while collecting the mail header
     }, $class;
@@ -73,7 +75,10 @@ sub next {
 		$self->{header} = substr($self->{_hdrbuf},0,$+[0],'');
 		if ($self->{extract_sig}
 		    and my @sig = _parse_header($self->{header})) {
-		    push @{$self->{sig} ||= []}, @sig;
+		    if (my $f = $self->{filter}) {
+			@sig = grep { $f->($_,$self->{header}) } @sig;
+		    }
+		    push @{$self->{sig} ||= []}, @sig if @sig;
 		}
 		$arg = delete $self->{_hdrbuf};
 		_append_body($self,$arg) if $arg ne '';
@@ -116,6 +121,13 @@ sub next {
 
     # return preliminary results and @todo
     return ($rv,$need_more_data ? (\''):(),sort keys %dnsnames);
+}
+
+sub filter {
+    my ($self,$filter) = @_;
+    $self->{filter} = $filter;
+    @{$self->{sig}} = grep { $filter->($_,$self->{header}) } @{$self->{sig}}
+	if $self->{header} && $self->{sig};
 }
 
 
@@ -951,6 +963,16 @@ Usually it either signs the mail (if C<sign> is given) or validates signatures
 inside the mail. When this option is true it will validate existing signatures
 additionally to creating new signatures if C<sign> is used.
 
+=item filter => $sub
+
+A filter function which gets applied to all signatures.
+Signatures not matching the filter will be removed.
+The function is called as C<< $sub->(\%sig,$header) >> where C<%sig> is the
+signature hash and C<$header> the header of the mail (which can be considered
+the same over all calls of C<$sub>). Typically this is used to exclude any
+signatures which don't match the domain of the From header, i.e. check against
+C<$sig{d}>.
+
 =back
 
 
@@ -998,6 +1020,11 @@ A SignRecord has additionally the following methods:
 =item signature - the DKIM-Signature value, only if DKIM_SUCCESS
 
 =back
+
+=item filter($sub)
+
+Sets a filter function and applies it immediately if the mail header is already
+known.  See C<filter> argument of C<new> for more details.
 
 =back
 

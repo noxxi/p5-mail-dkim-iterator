@@ -1,3 +1,6 @@
+0.012 - 2015/11/20
+- added filter argument so that for example only signatures matching the domain
+  of the From header will be checked
 0.011 - 2015/11/18
 - make interface more similar to Mail::SPF::Iterator, i.e. everything is done
   through a single method C<next>
