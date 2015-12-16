@@ -1,7 +1,7 @@
 package Mail::DKIM::Iterator;
 use v5.10.0;
 
-our $VERSION = '0.012';
+our $VERSION = '0.013';
 
 use strict;
 use warnings;
@@ -222,7 +222,7 @@ sub _compute_result {
 # Input can be string or hash.
 sub parse_signature {
     my ($v,$error,$for_signing) = @_;
-    $v = _parse_taglist($v,$error) or return if !ref($v);
+    $v = parse_taglist($v,$error) or return if !ref($v);
 
     if ($for_signing) {
 	# some defaults
@@ -315,7 +315,7 @@ sub parse_signature {
 # Input can be string or hash.
 sub parse_dkimkey {
     my ($v,$error) = @_;
-    $v = _parse_taglist($v,$error) or return if !ref($v);
+    $v = parse_taglist($v,$error) or return if !ref($v);
     if (!$v || !%$v) {
 	$$error = "invalid or empty DKIM record";
 	return;
@@ -696,7 +696,7 @@ sub _parse_header {
 
 {
 
-    # _parse_taglist($val,\$error)
+    # parse_taglist($val,\$error)
     # Parse a tag-list, like in the DKIM signature and in the DKIM key.
     # Returns a hash of the parsed list. If error occur $error will be set and
     # undef will be returned.
@@ -711,7 +711,7 @@ sub _parse_header {
     my $end = qr{(?:\r?\n)?\z};
     my $delim_or_end = qr{ $fws? (?: $end | ; (?: $fws?$end|)) }x;
 
-    sub _parse_taglist {
+    sub parse_taglist {
 	my ($v,$error) = @_;
 	my %v;
 	while ( $v =~m{\G $fws? (?:
@@ -1045,6 +1045,11 @@ returns it as a hash. On any problems while interpreting the value undef will be
 returned and C<$error> will be filled with a string representation of the
 problem.
 
+=item parse_taglist($string,\$error) -> \%hash
+
+This parses a tag list like found in DKIM record, DKIM signatures or DMARC
+records and returns it as a hash.
+
 =item sign($dkim_sig,$priv_key,$hdr,\$error) -> $signed_dkim_sig
 
 This takes a DKIM signature C<$dkim_sig> (as string or hash), an RSA private key
@@ -1053,6 +1058,7 @@ mail and computes the signature. The result C<$signed_dkim_sig> will be a
 signature string which can be put on top of the mail.
 
 On errors $error will be set and undef will returned.
+
 
 =back
 

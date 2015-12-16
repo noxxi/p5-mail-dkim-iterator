@@ -1,3 +1,5 @@
+0.013 - 2015/12/16
+- make parse_taglist public
 0.012 - 2015/11/20
 - added filter argument so that for example only signatures matching the domain
   of the From header will be checked
