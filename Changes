@@ -1,3 +1,6 @@
+0.014 - 2016/06/14
+- leave arguments for next as they are, i.e. don't work on alias for(@_) and
+  thus inadvertantily change the buffer in the caller
 0.013 - 2015/12/16
 - make parse_taglist public
 0.012 - 2015/11/20

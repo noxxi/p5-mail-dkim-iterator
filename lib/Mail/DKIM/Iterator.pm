@@ -1,7 +1,7 @@
 package Mail::DKIM::Iterator;
 use v5.10.0;
 
-our $VERSION = '0.013';
+our $VERSION = '0.014';
 
 use strict;
 use warnings;
@@ -57,7 +57,8 @@ sub new {
 sub next {
     my $self = shift;
     my $rv;
-    for my $arg (@_) {
+    while (@_) {
+	my $arg = shift;
 	if (ref($arg)) {
 	    # ref: mapping (host,dkim_key)
 	    %{ $self->{records} } = (%{ $self->{records} }, %$arg) if $arg;
@@ -862,7 +863,7 @@ Iterativ validation of DKIM records or DKIM signing of mails.
 	my $name = $_->domain;
 	if (!defined $status) {
 	    print STDERR "$mailfile: $name UNKNOWN\n";
-	} elsif ($status DKIM_SUCCESS) {
+	} elsif ($status == DKIM_SUCCESS) {
 	    # fully validated
 	    print STDERR "$mailfile: $name OK\n";
 	} elsif ($status == DKIM_PERMFAIL) {
@@ -1074,7 +1075,7 @@ Steffen Ullrich <sullr[at]cpan[dot]org>
 
 =head1 COPYRIGHT
 
-Steffen Ullrich, 2015
+Steffen Ullrich, 2015..2016
 
 This module is free software; you can redistribute it and/or
 modify it under the same terms as Perl itself.
