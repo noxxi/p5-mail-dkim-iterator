@@ -1,7 +1,7 @@
 package Mail::DKIM::Iterator;
 use v5.10.0;
 
-our $VERSION = '0.014';
+our $VERSION = '0.015';
 
 use strict;
 use warnings;
@@ -45,6 +45,10 @@ sub new {
 	$self->{extract_sig} = delete $args{sign_and_verify};
 	my $error;
 	for(@$sig) {
+	    if (ref($_) && !$_->{h}) {
+		$_->{h} = 'from'; # minimal
+		$_->{h_auto} = 1; # but better version will be detected based on mail
+	    }
 	    my $s = parse_signature($_,\$error,1);
 	    die "bad signature '$_': $error" if !$s;
 	    push @{$self->{sig}}, $s
@@ -251,11 +255,10 @@ sub parse_signature {
     $v->{d} = lc($v->{d});
     $v->{a} = lc($v->{a}//'rsa-sha256');
     $v->{c} = lc($v->{c}//'simple/simple');
-    $v->{'h:list'} = do {
-	# some signatures have the same field twice in h - sanitize
-	my %h;
-	[ grep { !$h{$_}++ } split(/\s*:\s*/,lc($v->{h})) ];
-    };
+
+    my @h = split(/\s*:\s*/,lc($v->{h}));
+    $$error = "'from' missing from [h]eader fields" if ! grep { $_ eq 'from' } @h;
+    $v->{'h:list'} = \@h;
 
     if ($for_signing) {
 	delete $v->{b};
@@ -357,6 +360,19 @@ sub parse_dkimkey {
 # can be inserted into the mail header.
 sub sign {
     my ($sig,$key,$hdr,$error) = @_;
+    if (ref($sig) && $sig->{h_auto}) {
+	# add a useful default based on the header which makes sure that no all
+	# relevant headers are covered and no additional important headers can
+	# be added
+	my @h;
+	for my $k (qw(from to cc subject content-type content-transfer-encoding)) {
+	    for($hdr =~m{^($k):}mgi) {
+		push @h,$k; # cover each instance in header
+	    }
+	    push @h,$k; # cover non-existance so that no instance can be added
+	}
+	$sig->{h} = join(':',@h);
+    }
     $sig = parse_signature($sig,$error,1) or return;
 
     my %sig = %$sig;
@@ -399,7 +415,7 @@ sub sign {
 		    $lines[-1] .= substr($append,0,$x80,'');
 		    $append eq '' and last;
 		}
-		push @lines,'';
+		push @lines,' ';
 		$x80 = 80;
 	    }
 	}
@@ -552,6 +568,7 @@ sub _parse_header {
 	$hash = $digest{$hash}();
 	$canon = $hdrc{$canon};
 	my @hdr;
+	my %kv;
 	for my $k (@$headers) {
 	    if ($k eq 'dkim-signature') {
 		for($hdr =~m{^($k:[^\n]*\n(?:[ \t][^\n]*\n)*)}mig) {
@@ -559,7 +576,10 @@ sub _parse_header {
 		    push @hdr,$_;
 		}
 	    } else {
-		push @hdr, $hdr =~m{^($k:[^\n]*\n(?:[ \t][^\n]*\n)*)}mig;
+		my $v = $kv{$k} ||=
+		    [ $hdr =~m{^($k:[^\n]*\n(?:[ \t][^\n]*\n)*)}mig ];
+		# take last matching kv in mail header
+		push @hdr, pop(@$v) // '';
 	    }
 	}
 	$dkh =~s{([ \t;:]b=)([a-zA-Z0-9/+= \t\r\n]+)}{$1};

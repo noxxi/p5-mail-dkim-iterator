@@ -27,7 +27,11 @@ GetOptions(
 );
 
 my $res = Net::DNS::Resolver->new;
-my %globdns;
+
+# fill with test entry which is used in sign.pl
+my %globdns = (
+    's._domainkey.example.local' => 'v=DKIM1; k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDOD/2mm2FfRCkBhtQkE3Wl2M3A9E8PJiSkvciLrSoTePnHC0MSLaNXYUmFHT//zT4ZebruQDgPVsLRLVmWssVaKn9EpKQcd55qVKApFNZSoev5sdzXP9g+AuZYtnkSHzlilqiSttHkadXSAyJ8WOlMC0kTPWEkL+FyWDyezKuj9QIDAQAB'
+);
 
 my $mbox = Mailbox->new(@ARGV);
 my ($dkim,$id);
@@ -53,7 +57,7 @@ while ( my $mail = $mbox->nextmail ) {
 	my $todo = shift(@todo);
 	if (ref($todo)) {
 	    # need more data from mail
-	    $buf //= $mbox->nextdata;
+	    $buf //= $mbox->nextdata // die "no more data from mail";
 	    ($rv,@todo) = $dkim->next($buf);
 	    $buf = undef;
 	} else {

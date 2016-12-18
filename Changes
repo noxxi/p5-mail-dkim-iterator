@@ -1,3 +1,11 @@
+0.015 - 2016/12/18
+- fix signing/validation: only a single header (starting from the bottom) should
+  be checked for each entry in [h]eader.
+- option `h_auto` to automatically create a useful [h]eader entry when signing
+- fixed problem with breaking long lines which made mail header invalid (missing
+  space in folded line)
+- new scripts/sign.pl for signing mails
+- no more endless loop on broken input mails in scripts/validate-emails.pl
 0.014 - 2016/06/14
 - leave arguments for next as they are, i.e. don't work on alias for(@_) and
   thus inadvertantily change the buffer in the caller
