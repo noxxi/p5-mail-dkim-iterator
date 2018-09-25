@@ -16,12 +16,14 @@ Default builtins for key, domain, selector and header are provided.
 
 Usage: $0 [options] mail*
 Options:
-   -h|--help:        this help
-   -K|--key file:    file with RSA key used to sign mail
-   -D|--domain d:    domain for d=..  ('example.local')
-   -S|--selector s:  selector for s=..  ('s')
-   -H|--header h:    header list for h=..
-   --ext ext:        extension to use for output files ('.dkim-signed')
+   -h|--help        this help
+   -K|--key file    file with RSA key used to sign mail
+   -D|--domain d    domain for d=..  ('example.local')
+   -S|--selector s  selector for s=..  ('s')
+   -H|--header h    header list for h=..
+   -L|--length i    optional max body length to sign
+   -C|--canon  c    canonicalization - default simple/simple
+   --ext ext        extension to use for output files ('.dkim-signed')
 
 USAGE
     exit(2);
@@ -31,7 +33,9 @@ my $key = _builtin_priv_key_pem();
 my $domain = 'example.local';
 my $selector = 's';
 my $ext = '.dkim-signed';
+my $canon = 'simple/simple';
 my $header;
+my $sign_length;
 GetOptions(
     'h|help' => sub {usage()},
     'K|key=s' => sub {
@@ -42,6 +46,8 @@ GetOptions(
     'D|domain=s' => \$domain,
     'S|selector=s' => \$selector,
     'H|header=s' => \$header,
+    'L|length=i' => \$sign_length,
+    'C|canon=s'  => \$canon,
     'ext=s' => \$ext,
 );
 
@@ -50,6 +56,7 @@ my %args = (
     s => $selector,
     d => $domain,
     h => $header,
+    c => $canon,
 );
 
 if (!@ARGV) {
@@ -64,19 +71,21 @@ if (!@ARGV) {
 
 # create signature
 sub sign {
-    my ($mail,%args) = @_;
-    $mail = [ $mail ] if ! ref($mail);
-    push @$mail,'';
+    my ($total_mail,%args) = @_;
+
+    if ($sign_length) {
+	my $blen = $total_mail =~m{(\r?\n)\1(.*)\z}s && length($2);
+	$args{l} = ($sign_length<0 || $sign_length>$blen) ? $blen : $sign_length;
+    }
     my $dkim = Mail::DKIM::Iterator->new( sign => \%args);
 
     my $rv;
     my @todo = \'';
-    my $total_mail;
+    my $mail = [ $total_mail,'' ];
     while (@todo) {
 	my $todo = shift(@todo);
 	if (ref($todo)) {
 	    die "no more data after end of mail" if !@$mail;
-	    $total_mail .= $mail->[0];
 	    ($rv,@todo) = $dkim->next(shift(@$mail));
 	} else {
 	    die "there should no no DNS lookups needed for signing\n";
