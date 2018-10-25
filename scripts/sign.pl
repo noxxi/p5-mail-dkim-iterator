@@ -73,9 +73,12 @@ if (!@ARGV) {
 sub sign {
     my ($total_mail,%args) = @_;
 
-    if ($sign_length) {
-	my $blen = $total_mail =~m{(\r?\n)\1(.*)\z}s && length($2);
-	$args{l} = ($sign_length<0 || $sign_length>$blen) ? $blen : $sign_length;
+    if (defined $sign_length) {
+	if ($sign_length<0) {
+	    $args{l} = $total_mail =~m{(\r?\n)\1(.*)\z}s && length($2);
+	} else {
+	    $args{l} = $sign_length;
+	}
     }
     my $dkim = Mail::DKIM::Iterator->new( sign => \%args);
 
