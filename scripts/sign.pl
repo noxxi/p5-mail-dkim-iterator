@@ -20,7 +20,8 @@ Options:
    -K|--key file    file with RSA key used to sign mail
    -D|--domain d    domain for d=..  ('example.local')
    -S|--selector s  selector for s=..  ('s')
-   -H|--header h    header list for h=..
+   -H|--header h    (minimal) header list for h=..
+   --no-h-auto      protect only headers specified in --header
    -L|--length i    optional max body length to sign
    -C|--canon  c    canonicalization - default simple/simple
    --ext ext        extension to use for output files ('.dkim-signed')
@@ -36,6 +37,7 @@ my $ext = '.dkim-signed';
 my $canon = 'simple/simple';
 my $header;
 my $sign_length;
+my $no_h_auto;
 GetOptions(
     'h|help' => sub {usage()},
     'K|key=s' => sub {
@@ -48,6 +50,7 @@ GetOptions(
     'H|header=s' => \$header,
     'L|length=i' => \$sign_length,
     'C|canon=s'  => \$canon,
+    'no-h-auto'  => \$no_h_auto,
     'ext=s' => \$ext,
 );
 
@@ -56,6 +59,7 @@ my %args = (
     s => $selector,
     d => $domain,
     h => $header,
+    $no_h_auto ? (h_auto => 0):(),
     c => $canon,
 );
 

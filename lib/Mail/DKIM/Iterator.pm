@@ -1,7 +1,7 @@
 package Mail::DKIM::Iterator;
 use v5.10.0;
 
-our $VERSION = '0.017';
+our $VERSION = '1.000';
 
 use strict;
 use warnings;
@@ -54,12 +54,10 @@ sub new {
 	$self->{extract_sig} = delete $args{sign_and_verify};
 	my $error;
 	for(@$sig) {
-	    if (ref($_) && !$_->{h}) {
-		$_->{h} = 'from'; # minimal
-		$_->{h_auto} = 1; # but better version will be detected based on mail
-	    }
+	    $_->{h} //= 'from' if ref($_); # minimal
 	    my $s = parse_signature($_,\$error,1);
 	    die "bad signature '$_': $error" if !$s;
+	    $s->{h_auto} //= 1; # secure version will be detected based on mail
 	    push @{$self->{sig}}, $s
 	}
     }
@@ -373,14 +371,17 @@ sub sign {
 	# add a useful default based on the header which makes sure that no all
 	# relevant headers are covered and no additional important headers can
 	# be added
-	my @h;
+	my (%oh,@nh);
+	$oh{lc($_)}++ for split(':',$sig->{h} ||'');
 	for my $k (@sign_headers) {
 	    for($hdr =~m{^($k):}mgi) {
-		push @h,$k; # cover each instance in header
+		push @nh,$k; # cover each instance in header
 	    }
-	    push @h,$k; # cover non-existance so that no instance can be added
+	    push @nh,$k; # cover non-existance so that no instance can be added
+	    delete $oh{$k} if exists $oh{$k} and --$oh{$k} == 0;
 	}
-	$sig->{h} = join(':',@h);
+	push @nh,($_) x $oh{$_} for keys %oh;
+	$sig->{h} = join(':',@nh);
     }
     $sig = parse_signature($sig,$error,1) or return;
 
@@ -1124,10 +1125,40 @@ signature string which can be put on top of the mail.
 If C<$hdr->{l}> is defined and C<0> then the signature will contain an 'l'
 attribute with the full length of the body.
 
+If C<$hdr->{h_auto}> is true it will determine the necessary minimal
+protection needed for the headers, i.e. critical headers will be included in
+the C<h> attribute one more time than they are set to protect against an
+additional definition. To achieve a secure by default behavior
+C<$hdr->{h_auto}> is true by default and need to be explicitly set to false
+to achieve potential insecure behavior.
+
+if C<$hdr->{h}> is set any headers in C<$hdr->{h}> which are not yet
+in the C<h> attribute due to C<$hdr->{h_auto}> will be added also.
+
 On errors $error will be set and undef will returned.
 
 
 =back
+
+=head1 SECURITY
+
+The protection offered by DKIM can be easily be weakened by using insufficient
+header protection in the C<h> attribute of the signature of by using the C<l>
+attribute and having data which are not covered by the body hash.
+
+C<Mail::DKIM::Iterator> will warn if it detects insufficent protection inside
+the DKIM signature, i.e. if critical headers are not signed or if the body has
+non-white-space data not covered by the body hash. Check the C<warning> function
+on the result to get these warnings.
+As critical are considered from, subject, content-type and
+content-transfer-encoding since changes to these can significantly change the
+interpretation of the mail by the MUA or user.
+
+When signing C<Mail::DKIM::Iterator> will also protect all critical headers
+against modification and adding extra fields as described in RFC 6376 section
+8.15. In addition to the critical headers checked when validating a signature it
+will also properly protect C<to> and C<cc> by default.
+
 
 =head1 SEE ALSO
 
