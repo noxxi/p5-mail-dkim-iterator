@@ -142,6 +142,15 @@ sub filter {
 	if $self->{header} && $self->{sig};
 }
 
+sub result {
+    my $self = shift;
+    return $self->{_last_result};
+}
+
+sub authentication_results {
+    return join(";\n",map { " ".$_->authentication_results } @{shift->result || []});
+}
+
 
 # Compute result based on current data.
 # This might add more DKIM records to validate signatures.
@@ -227,7 +236,7 @@ sub _compute_result {
 	    push @rv, Mail::DKIM::Iterator::VerifyRecord->new($sig,$dns);
 	}
     }
-    return \@rv;
+    return ($self->{_last_result} = \@rv);
 }
 
 # Parse DKIM-Signature value into hash and fill in necessary default values.
@@ -830,6 +839,14 @@ sub status    { shift->[2] }
 sub error     { $_[0]->[2] >0 ? undef : $_[0]->[3] }
 sub warning   { $_[0]->[2] >0 ? $_[0]->[3] : undef }
 
+sub authentication_results {
+    my $self = shift;
+    my $ar = "dkim=$self->[2]";
+    $ar .= " ($self->[3])" if defined $self->[3] and $self->[3] ne '';
+    $ar .= " header.d=".$self->[0]{d};
+    return $ar;
+}
+
 # ResultRecord for signing.
 package Mail::DKIM::Iterator::SignRecord;
 sub new {
@@ -1083,8 +1100,20 @@ or added. It will also warn if the signature uses the C<l> attribute to
 limit whch part of the body is included in the signature and there are
 non-white-space data after the signed body.
 
+=item authentication_results
+
+returns a line usable in Authentication-Results header
+
 =back
 
+=item result
+
+Will return the latest computed result, i.e. like C<next>.
+
+=item authentication_results
+
+Will return a string which can be used for the C<Authentication-Results>
+header, see RFC 7601.
 
 =item filter($sub)
 
