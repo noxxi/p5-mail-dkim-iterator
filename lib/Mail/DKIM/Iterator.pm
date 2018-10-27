@@ -1,7 +1,7 @@
 package Mail::DKIM::Iterator;
 use v5.10.0;
 
-our $VERSION = '1.000';
+our $VERSION = '1.001';
 
 use strict;
 use warnings;
@@ -72,7 +72,9 @@ sub next {
 	my $arg = shift;
 	if (ref($arg)) {
 	    # ref: mapping (host,dkim_key)
-	    %{ $self->{records} } = (%{ $self->{records} }, %$arg) if $arg;
+	    while (my ($k,$v) = each %$arg) {
+		$self->{records}{$k} = $v;
+	    }
 	    $rv = _compute_result($self);
 	} else {
 	    # string: append data from mail
@@ -103,9 +105,7 @@ sub next {
 	    if (!$self->{sig}) {
 		# No signatures found in body -> empty return list
 		$rv = [];
-	    } elsif ($self->{_bhdone}) {
-		# We have read enough of the body to compute the body hash for
-		# all signatures -> compute final result
+	    } else {
 		$rv = _compute_result($self);
 	    }
 	}
@@ -118,7 +118,7 @@ sub next {
     # Extract the DNS names for the partial results where the DKIM key is needed
     # and return the as todo. If the body hash could not yet computed for a
     # signature mark also that we need more data
-    my (%dnsnames,$need_more_data);
+    my (%need_dns,$need_more_data);
     for(@$rv) {
 	$_->status and next;
 	my $sig = $_->sig;
@@ -128,11 +128,14 @@ sub next {
 
 	# Need to get DKIM key to validate signature?
 	# Only if we have sig.b, i.e. an extracted signature from the header.
-	$dnsnames{ $_->dnsname }++ if $sig->{b};
+	if ($sig->{b}) {
+	    my $name = $_->dnsname;
+	    $need_dns{$name}++ if ! $self->{records}{$name};
+	}
     }
 
     # return preliminary results and @todo
-    return ($rv,$need_more_data ? (\''):(),sort keys %dnsnames);
+    return ($rv,$need_more_data ? (\''):(),sort keys %need_dns);
 }
 
 sub filter {
@@ -158,7 +161,6 @@ sub _compute_result {
     my $self = shift;
     return if defined $self->{_hdrbuf}; # need more header
     return [] if !$self->{sig};         # nothing to verify
-    return if ! $self->{_bhdone};       # need more body
 
     my @rv;
     for my $sig (@{$self->{sig}}) {
@@ -223,16 +225,17 @@ sub _compute_result {
 		    $self->{records}{$dns} = $txt = { permfail => $error };
 		}
 	    }
-	    # Use DKIM key to verify the signature and created final result.
-	    push @rv, $sig->{':result'} = Mail::DKIM::Iterator::VerifyRecord
-		->new($sig,$dns, _verify_sig($sig,$txt));
+
+	    my @v = _verify_sig($sig,$txt);
+	    push @rv, Mail::DKIM::Iterator::VerifyRecord->new($sig,$dns,@v);
+	    $sig->{':result'} = $rv[-1] if @v; # final result
 
 	} elsif (exists $self->{records}{$dns}) {
 	    # cannot get DKIM record
 	    push @rv, $sig->{':result'} = Mail::DKIM::Iterator::VerifyRecord
 		->new($sig,$dns, DKIM_TEMPFAIL, "dns lookup failed");
 	} else {
-	    # no DKIM record yet known for $dns
+	    # no DKIM record yet known for $dns - preliminary result
 	    push @rv, Mail::DKIM::Iterator::VerifyRecord->new($sig,$dns);
 	}
     }
@@ -491,6 +494,7 @@ sub _verify_sig {
 	if $param->{g} && $sig->{i} !~ $param->{g};
 
     # pre-computed hash over body
+    return if ! defined $sig->{'bh:computed'}; # not yet computed
     if ($sig->{'bh:computed'} ne $sig->{'bh:bin'}) {
 	return ($FAIL,'body hash mismatch');
     }
@@ -692,38 +696,46 @@ sub _parse_header {
     );
 
     # add data to the body
-    # Once we have enough data to compute all bodyhashes self._bhdone is set
     sub _append_body {
 	my ($self,$buf) = @_;
 	my $bh = $self->{_bodyhash} ||= do {
 	    my @bh;
 	    for(@{$self->{sig}}) {
-		if ($_->{error}) {
+		if (!$_->{error} and
+		    my $digest = $digest{$_->{'a:hash'}}() and
+		    my $transform = $bodyc{$_->{'c:body'}}()
+		) {
+		    push @bh, {
+			digest => $digest,
+			transform => $transform,
+			$_->{l} ? (l => $_->{l}) :
+			defined($_->{l}) ? (l => \$_->{l}) :  # capture l
+			(),
+		    };
+		} else {
 		    push @bh, { done => 1 };
-		    next;
 		}
-		my $digest = $digest{$_->{'a:hash'}}();
-		my $transform = $bodyc{$_->{'c:body'}}();
-		push @bh, {
-		    digest => $digest,
-		    transform => $transform,
-		    $_->{l} ? (l => $_->{l}) :
-		    defined($_->{l}) ? (l => \$_->{l}) :  # capture l
-		    (),
-		};
 	    }
 	    \@bh;
 	};
 
-	my $done = 0;
+	my $i=-1;
 	for(@$bh) {
+	    $i++;
+	    $_->{done} and next;
+	    if ($buf eq '') {
+		$_->{done} = 1;
+		goto compute_signature;
+	    }
 	    my $tbuf = $_->{transform}($buf);
 	    $tbuf eq '' and next;
 	    {
 		defined $_->{l} or last;
 		if (ref $_->{l}) {
-		    ${$_->{l}} += length($tbuf)
-		} elsif ($_->{l} > 0) {
+		    ${$_->{l}} += length($tbuf);
+		    next;
+		}
+		if ($_->{l} > 0) {
 		    last if ($_->{l} -= length($tbuf))>0;
 		    $_->{_data_after_l} ||=
 			substr($tbuf,$_->{l},-$_->{l},'') =~m{\S} & 1;
@@ -732,21 +744,19 @@ sub _parse_header {
 		    $_->{_data_after_l} ||= $tbuf =~m{\S} & 1;
 		    $tbuf = '';
 		}
+		$_->{done} = 1;
 	    }
 	    $_->{digest}->add($tbuf) if $tbuf ne '';
+	    $_->{done} or next;
+
+	    compute_signature:
+	    $self->{sig}[$i]{'bh:computed'} = $_->{digest}->digest;
+	    push @{$self->{sig}[$i]{':warning'}}, 'data after signed body'
+		if $_->{_data_after_l};
 	}
 
-	if ($done == @$bh or $buf eq '') {
-	    # done
-	    delete $self->{_bodyhash};
-	    for(my $i=0;$i<@$bh;$i++) {
-		$self->{sig}[$i]{'bh:computed'} =
-		    ( $bh->[$i]{digest} || next)->digest;
-		push @{$self->{sig}[$i]{':warning'}}, 'data after signed body'
-		    if $bh->[$i]{_data_after_l};
-	    }
-	    $self->{_bhdone} = 1;
-	}
+	delete $self->{_bodyhash}
+	    if @$bh == grep { $_->{done} } @$bh; # done with all
     }
 }
 
@@ -856,7 +866,7 @@ sub new {
 sub sig       { shift->[0] }
 sub domain    { shift->[0]{d} }
 sub dnsname   {
-    my $sig = shift;
+    my $sig = shift->[0];
     return ($sig->{s} || 'UNKNOWN').'_domainkey'.($sig->{d} || 'UNKNOWN');
 }
 sub signature { shift->[1] }
