@@ -875,9 +875,9 @@ sub error     { shift->[3] }
 
 __END__
 
-=head1 NAME Mail::DKIM::Iterator
+=head1 NAME 
 
-Iterativ validation of DKIM records or DKIM signing of mails.
+Mail::DKIM::Iterator - Iterative validation of DKIM records or DKIM signing of mails.
 
 =head1 SYNOPSIS
 
