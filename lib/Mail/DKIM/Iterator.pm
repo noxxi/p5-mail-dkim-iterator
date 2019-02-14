@@ -34,8 +34,6 @@ use constant {
     DKIM_SUCCESS     => dualvar( 1,'valid'),
 };
 
-
-
 # create new object
 sub new {
     my ($class,%args) = @_;
@@ -156,7 +154,6 @@ sub authentication_results {
 	$ar ? (' '.$ar) : (),
     } @{shift->result || []});
 }
-
 
 # Compute result based on current data.
 # This might add more DKIM records to validate signatures.
@@ -279,7 +276,8 @@ sub parse_signature {
     $v->{c} = lc($v->{c}//'simple/simple');
 
     my @h = split(/\s*:\s*/,lc($v->{h}));
-    $$error = "'from' missing from [h]eader fields" if ! grep { $_ eq 'from' } @h;
+    $$error = "'from' missing from [h]eader fields"
+	if ! grep { $_ eq 'from' } @h;
     $v->{'h:list'} = \@h;
 
     if ($for_signing) {
@@ -566,7 +564,6 @@ sub _parse_header {
     }
 }
 
-
 {
 
     # simple header canonicalization:
@@ -691,8 +688,6 @@ sub _parse_header {
 	};
     };
 
-
-
     my %bodyc = (
 	simple  => sub { $bodyc->(0) },
 	relaxed => sub { $bodyc->(1) },
@@ -756,8 +751,6 @@ sub _parse_header {
     }
 }
 
-
-
 {
 
     # parse_taglist($val,\$error)
@@ -797,7 +790,6 @@ sub _parse_header {
 	return \%v;
     }
 }
-
 
 sub _encode64 {
     my $data = shift;
@@ -870,18 +862,17 @@ sub signature { shift->[1] }
 sub status    { shift->[2] }
 sub error     { shift->[3] }
 
-
 1;
 
 __END__
 
-=head1 NAME 
+=head1 NAME
 
-Mail::DKIM::Iterator - Iterative validation of DKIM records or DKIM signing of mails.
+Mail::DKIM::Iterator - Iterative DKIM validation or signing.
 
 =head1 SYNOPSIS
 
-    # ---- Verify all DKIM signature headers found within a mail --------------
+    # ---- Verify all DKIM signature headers found within a mail -----------
 
     my $mailfile = $ARGV[0];
 
@@ -949,7 +940,7 @@ Mail::DKIM::Iterator - Iterative validation of DKIM records or DKIM signing of m
     }
 
 
-    # ---- Create signature for a mail ----------------------------------------
+    # ---- Create signature for a mail -------------------------------------
 
     my $mailfile = $ARGV[0];
 
@@ -960,7 +951,7 @@ Mail::DKIM::Iterator - Iterative validation of DKIM records or DKIM signing of m
 	a => 'rsa-sha1',
 	d => 'example.com',
 	s => 'foobar',
-	':key' => ... PEM string for private key or Crypt::OpenSSL::RSA object
+	':key' => PEM string for private key or Crypt::OpenSSL::RSA object
     });
 
     open(my $fh,'<',$mailfile) or die $!;
@@ -988,9 +979,6 @@ Mail::DKIM::Iterator - Iterative validation of DKIM records or DKIM signing of m
 	    print $_->signature;
 	}
     }
-
-
-
 
 =head1 DESCRIPTION
 
@@ -1048,7 +1036,6 @@ signatures which don't match the domain of the From header, i.e. check against
 C<$sig{d}>.
 
 =back
-
 
 =item $dkim->next([ $mailchunk | \%dns ]*) -> ($rv,@todo)
 
@@ -1158,21 +1145,20 @@ C<$priv_key> (as PEM string or Crypt::OpenSSL::RSA object) and the header of the
 mail and computes the signature. The result C<$signed_dkim_sig> will be a
 signature string which can be put on top of the mail.
 
-If C<$hdr->{l}> is defined and C<0> then the signature will contain an 'l'
+If C<< $hdr->{l} >> is defined and C<0> then the signature will contain an 'l'
 attribute with the full length of the body.
 
-If C<$hdr->{h_auto}> is true it will determine the necessary minimal
+If C<< $hdr->{h_auto} >> is true it will determine the necessary minimal
 protection needed for the headers, i.e. critical headers will be included in
 the C<h> attribute one more time than they are set to protect against an
 additional definition. To achieve a secure by default behavior
-C<$hdr->{h_auto}> is true by default and need to be explicitly set to false
+C<< $hdr->{h_auto} >> is true by default and need to be explicitly set to false
 to achieve potential insecure behavior.
 
-if C<$hdr->{h}> is set any headers in C<$hdr->{h}> which are not yet
-in the C<h> attribute due to C<$hdr->{h_auto}> will be added also.
+if C<< $hdr->{h} >> is set any headers in C<< $hdr->{h} >> which are not yet
+in the C<h> attribute due to C<< $hdr->{h_auto} >> will be added also.
 
 On errors $error will be set and undef will returned.
-
 
 =back
 
@@ -1195,7 +1181,6 @@ against modification and adding extra fields as described in RFC 6376 section
 8.15. In addition to the critical headers checked when validating a signature it
 will also properly protect C<to> and C<cc> by default.
 
-
 =head1 SEE ALSO
 
 L<Mail::DKIM>
@@ -1208,8 +1193,7 @@ Steffen Ullrich <sullr[at]cpan[dot]org>
 
 =head1 COPYRIGHT
 
-Steffen Ullrich, 2015..2018
+Steffen Ullrich, 2015..2019
 
 This module is free software; you can redistribute it and/or
 modify it under the same terms as Perl itself.
-
