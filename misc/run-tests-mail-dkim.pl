@@ -64,13 +64,17 @@ for my $file (@ARGV) {
 	my ($name,$status,$error) = @$_;
 	if (!defined $status) {
 	    print STDERR " U $name\n";
-	} elsif ($status == DKIM_PERMFAIL) {
+	} elsif ($status == DKIM_FAIL) {
 	    print STDERR " F $name $error\n";
-	} elsif ($status == DKIM_SOFTFAIL) {
-	    print STDERR " f $name $error\n";
-	} elsif ($status == DKIM_TEMPFAIL) {
+	} elsif ($status == DKIM_PERMERROR) {
+	    print STDERR " E $name $error\n";
+	} elsif ($status == DKIM_TEMPERROR) {
 	    print STDERR " T $name $error\n";
-	} elsif ($status == DKIM_SUCCESS) {
+	} elsif ($status == DKIM_POLICY) {
+	    print STDERR " P $name $error\n";
+	} elsif ($status == DKIM_NEUTRAL) {
+	    print STDERR " f $name $error\n";
+	} elsif ($status == DKIM_PASS) {
 	    print STDERR " V $name\n";
 	} else {
 	    die $status

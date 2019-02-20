@@ -102,7 +102,7 @@ sub sign {
     $rv || die "no result after end of mail\n";
 
     @$rv == 1 or die "expected a single result, got ".int(@$rv)."\n";
-    $rv->[0]->status == DKIM_SUCCESS
+    $rv->[0]->status == DKIM_PASS
 	or die "unexpected status ".( $rv->[0]->status // '<undef>' )."\n";
     my $dkim_sig = $rv->[0]->signature;
     return $dkim_sig . $total_mail;

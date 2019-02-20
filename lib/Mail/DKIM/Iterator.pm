@@ -1,7 +1,7 @@
 package Mail::DKIM::Iterator;
 use v5.10.0;
 
-our $VERSION = '1.003';
+our $VERSION = '1.004';
 
 use strict;
 use warnings;
@@ -18,7 +18,26 @@ my $critical_headers_rx = do {
 my @sign_headers = (@critical_headers, 'to', 'cc', 'date');
 
 use Exporter 'import';
-our @EXPORT =qw(
+our @EXPORT = qw(
+    DKIM_POLICY
+    DKIM_PERMERROR
+    DKIM_NEUTRAL
+    DKIM_TEMPERROR
+    DKIM_FAIL
+    DKIM_PASS
+);
+
+use constant {
+    DKIM_POLICY      => dualvar(-4,'policy'),
+    DKIM_PERMERROR   => dualvar(-3,'permerror'),
+    DKIM_NEUTRAL     => dualvar(-2,'neutral'),
+    DKIM_TEMPERROR   => dualvar(-1,'temperror'),
+    DKIM_FAIL        => dualvar( 0,'fail'),
+    DKIM_PASS        => dualvar( 1,'pass'),
+};
+
+# compability to versions 1.003 and lower
+push @EXPORT, qw(
     DKIM_INVALID_HDR
     DKIM_TEMPFAIL
     DKIM_SOFTFAIL
@@ -27,12 +46,13 @@ our @EXPORT =qw(
 );
 
 use constant {
-    DKIM_INVALID_HDR => dualvar(-3,'invalid-header'),
-    DKIM_SOFTFAIL    => dualvar(-2,'soft-fail'),
-    DKIM_TEMPFAIL    => dualvar(-1,'temp-fail'),
-    DKIM_PERMFAIL    => dualvar( 0,'perm-fail'),
-    DKIM_SUCCESS     => dualvar( 1,'valid'),
+    DKIM_INVALID_HDR => DKIM_PERMERROR,
+    DKIM_TEMPFAIL    => DKIM_TEMPERROR,
+    DKIM_SOFTFAIL    => DKIM_NEUTRAL,
+    DKIM_PERMFAIL    => DKIM_FAIL,
+    DKIM_SUCCESS     => DKIM_PASS,
 };
+
 
 # create new object
 sub new {
@@ -182,8 +202,8 @@ sub _compute_result {
 		my $dkim_sig = sign($sig,$sig->{':key'},$self->{header},\$err);
 		push @rv, $sig->{':result'} =
 		    Mail::DKIM::Iterator::SignRecord->new(
-			$dkim_sig ? ($sig,$dkim_sig,DKIM_SUCCESS)
-			    : ($sig,undef,DKIM_PERMFAIL,$err)
+			$dkim_sig ? ($sig,$dkim_sig,DKIM_PASS)
+			    : ($sig,undef,DKIM_FAIL,$err)
 		    );
 	    }
 	    next;
@@ -195,7 +215,7 @@ sub _compute_result {
 		Mail::DKIM::Iterator::VerifyRecord->new(
 		    $sig,
 		    ($sig->{s}//'UNKNOWN')."_domainkey".($sig->{d}//'UNKNOWN'),
-		    DKIM_INVALID_HDR,
+		    DKIM_PERMERROR,
 		    $sig->{error}
 		);
 	    next;
@@ -205,7 +225,7 @@ sub _compute_result {
 
 	if ($sig->{x} && $sig->{x} < time()) {
 	    push @rv, $sig->{':result'} = Mail::DKIM::Iterator::VerifyRecord
-		->new($sig,$dns, DKIM_SOFTFAIL, "signature e[x]pired");
+		->new($sig,$dns, DKIM_POLICY, "signature e[x]pired");
 	    next;
 	}
 
@@ -233,7 +253,7 @@ sub _compute_result {
 	} elsif (exists $self->{records}{$dns}) {
 	    # cannot get DKIM record
 	    push @rv, $sig->{':result'} = Mail::DKIM::Iterator::VerifyRecord
-		->new($sig,$dns, DKIM_TEMPFAIL, "dns lookup failed");
+		->new($sig,$dns, DKIM_TEMPERROR, "dns lookup failed");
 	} else {
 	    # no DKIM record yet known for $dns - preliminary result
 	    push @rv, Mail::DKIM::Iterator::VerifyRecord->new($sig,$dns);
@@ -475,14 +495,14 @@ sub sign {
 
 # Verify a DKIM signature (hash from parse_signature) using a DKIM key (hash
 # from parse_dkimkey). Output is (error_code,error_string) or simply
-# (DKIM_SUCCESS) in case of no error.
+# (DKIM_PASS) in case of no error.
 sub _verify_sig {
     my ($sig,$param) = @_;
-    return (DKIM_PERMFAIL,"none or invalid dkim record") if ! %$param;
-    return (DKIM_TEMPFAIL,$param->{tempfail}) if $param->{tempfail};
-    return (DKIM_PERMFAIL,$param->{permfail}) if $param->{permfail};
+    return (DKIM_PERMERROR,"none or invalid dkim record") if ! %$param;
+    return (DKIM_TEMPERROR,$param->{tempfail}) if $param->{tempfail};
+    return (DKIM_PERMERROR,$param->{permfail}) if $param->{permfail};
 
-    my $FAIL = $param->{t}{y} ? DKIM_SOFTFAIL : DKIM_PERMFAIL;
+    my $FAIL = $param->{t}{y} ? DKIM_NEUTRAL : DKIM_FAIL;
     return ($FAIL,"key revoked") if ! $param->{p};
 
     return ($FAIL,"hash algorithm not allowed")
@@ -516,7 +536,7 @@ sub _verify_sig {
 	# warn "encrypt="._encode64($bencrypt)."\n";
 	return ($FAIL,'header sig mismatch');
     }
-    return (DKIM_SUCCESS, join(' + ', @{$sig->{':warning'} || []}));
+    return (DKIM_PASS, join(' + ', @{$sig->{':warning'} || []}));
 }
 
 # parse the header and extract
@@ -918,8 +938,8 @@ Mail::DKIM::Iterator - Iterative DKIM validation or signing.
 
     # This final result consists of a VerifyRecord for each DKIM signature
     # in the header, which provides access to the status. Status is one of
-    # of DKIM_SUCCESS, DKIM_PERMFAIL, DKIM_TEMPFAIL, DKIM_SOFTFAIL or
-    # DKIM_INVALID_HDR. In case of error $record->error contains a string
+    # of DKIM_FAIL, DKIM_FAIL, DKIM_PERMERROR, DKIM_TEMPERROR, DKIM_NEUTRAL or
+    # DKIM_POLICY. In case of error $record->error contains a string
     # representation of the error.
 
     for(@$rv) {
@@ -927,10 +947,10 @@ Mail::DKIM::Iterator - Iterative DKIM validation or signing.
 	my $name = $_->domain;
 	if (!defined $status) {
 	    print STDERR "$mailfile: $name UNKNOWN\n";
-	} elsif ($status == DKIM_SUCCESS) {
+	} elsif ($status == DKIM_PASS) {
 	    # fully validated
 	    print STDERR "$mailfile: $name OK ".$_->warning".\n";
-	} elsif ($status == DKIM_PERMFAIL) {
+	} elsif ($status == DKIM_FAIL) {
 	    # hard error
 	    print STDERR "$mailfile: $name FAIL ".$_->error."\n";
 	} else {
@@ -972,7 +992,7 @@ Mail::DKIM::Iterator - Iterative DKIM validation or signing.
 	my $name = $_->domain;
 	if (!defined $status) {
 	    print STDERR "$mailfile: $name UNKNOWN\n";
-	} elsif (status != DKIM_SUCCESS) {
+	} elsif (status != DKIM_PASS) {
 	    print STDERR "$mailfile: $name $status - ".$_->error."\n";
 	} else {
 	    # show signature
@@ -1060,11 +1080,11 @@ Both VerifyRecord and SignRecord have the following methods:
 =over 8
 
 =item status - undef if no DKIM result is yet known for the record (preliminary
-result). Otherwise any of DKIM_SUCCESS, DKIM_INVALID_HDR, DKIM_TEMPFAIL,
-DKIM_SOFTFAIL, DKIM_PERMFAIL.
+result). Otherwise any of DKIM_PASS, DKIM_FAIL, DKIM_NEUTRAL, DKIM_TEMPERROR,
+DKIM_POLICY, DKIM_PERMERROR.
 
 =item error - an error description in case the status shows an error, i.e. with
-all status values except undef and DKIM_SUCCESS.
+all status values except undef and DKIM_PASS.
 
 =item sig - the DKIM signature as hash
 
@@ -1078,7 +1098,7 @@ A SignRecord has additionally the following methods:
 
 =over 8
 
-=item signature - the DKIM-Signature value, only if DKIM_SUCCESS
+=item signature - the DKIM-Signature value, only if DKIM_PASS
 
 =back
 
@@ -1086,7 +1106,7 @@ A VerifyRecord has additionally the following methods:
 
 =over 8
 
-=item warning - possible warnings if DKIM_SUCCESS
+=item warning - possible warnings if DKIM_PASS
 
 Currently this is used to provide information if critical header fields in
 the mail are not convered by the signature and thus might have been changed
