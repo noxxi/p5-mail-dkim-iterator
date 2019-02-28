@@ -1,7 +1,7 @@
 package Mail::DKIM::Iterator;
 use v5.10.0;
 
-our $VERSION = '1.005';
+our $VERSION = '1.006';
 
 use strict;
 use warnings;
@@ -520,21 +520,28 @@ sub _verify_sig {
 	return ($FAIL,'body hash mismatch');
     }
 
-    my $rsa = Crypt::OpenSSL::RSA->new_public_key(do {
-	local $_ = $param->{p};
-	s{\s+}{}g;
-	s{(.{1,64})}{$1\n}g;
-	"-----BEGIN PUBLIC KEY-----\n$_-----END PUBLIC KEY-----\n";
-    });
-    $rsa or return ($FAIL,"using public key failed");
-    $rsa->use_no_padding;
-    my $bencrypt = $rsa->encrypt($sig->{'b:bin'});
-    my $expect = _emsa_pkcs1_v15(
-	$sig->{'a:hash'},$sig->{'h:hash'},$rsa->size);
-    if ($expect ne $bencrypt) {
-	# warn "expect= "._encode64($expect)."\n";
-	# warn "encrypt="._encode64($bencrypt)."\n";
-	return ($FAIL,'header sig mismatch');
+    if (!eval {
+	my $rsa = Crypt::OpenSSL::RSA->new_public_key(do {
+	    local $_ = $param->{p};
+	    s{\s+}{}g;
+	    s{(.{1,64})}{$1\n}g;
+	    "-----BEGIN PUBLIC KEY-----\n$_-----END PUBLIC KEY-----\n";
+	}) or die "using public key failed\n";
+	$rsa->use_no_padding;
+	my $bencrypt = eval { $rsa->encrypt($sig->{'b:bin'}) }
+	    or die "header sig corrupt\n";
+	my $expect = _emsa_pkcs1_v15(
+	    $sig->{'a:hash'},$sig->{'h:hash'},$rsa->size);
+	if ($expect ne $bencrypt) {
+	    # warn "expect= "._encode64($expect)."\n";
+	    # warn "encrypt="._encode64($bencrypt)."\n";
+	    die [$FAIL,"header sig mismatch"];
+	}
+	1;
+    }) {
+	return @{$@} if ref($@);
+	(my $err = $@) =~s{(?: at \S+ line \d+.*)?\n}{};
+	return (DKIM_PERMERROR,$err);
     }
     return (DKIM_PASS, join(' + ', @{$sig->{':warning'} || []}));
 }

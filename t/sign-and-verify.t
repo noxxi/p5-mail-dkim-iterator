@@ -3,7 +3,7 @@ use warnings;
 use Test::More;
 use Mail::DKIM::Iterator;
 
-plan tests => 19;
+plan tests => 21;
 
 # basic tests with different canonicalizations and algorithms
 for my $c (qw(
@@ -110,6 +110,26 @@ for my $c (qw(
 	"DKIM signature invalid syntax");
 }
 
+{
+    my $ok = eval {
+	my $m = sign([mail()], 'b' => 'foobar' );
+	verify([$m],dns());
+    };
+    my $err = $@ || ($ok ? '':'unknown error');
+    is( $err,"status status=permerror error=header sig corrupt\n",
+	"DKIM signature corrupt b");
+}
+
+{
+    my $ok = eval {
+	my $m = sign([mail()], 'bh' => 'foobar' );
+	verify([$m],dns());
+    };
+    my $err = $@ || ($ok ? '':'unknown error');
+    is( $err,"status status=fail error=body hash mismatch\n",
+	"DKIM signature corrupt bh");
+}
+
 
 ############################################################################
 # functions
@@ -120,6 +140,8 @@ sub sign {
     my ($mail,%args) = @_;
     push @$mail,'';
     my $v = delete $args{v};
+    my $b = delete $args{b};
+    my $bh = delete $args{bh};
     my $dkim = Mail::DKIM::Iterator->new( sign => {
 	d => 'example.com',
 	s => 'good',
@@ -148,6 +170,9 @@ sub sign {
 	or die "unexpected status ".( $rv->[0]->status // '<undef>' )."\n";
     my $dkim_sig = $rv->[0]->signature;
     $dkim_sig =~s{\bv=1;}{v=$v} if defined $v;
+    $dkim_sig =~s{\bb=(?:[^;]+)(\z|;)}{b=$b$1} if defined $b;
+    $dkim_sig =~s{\bbh=(?:[^;]+)(\z|;)}{bh=$bh$1} if defined $bh;
+    #warn "XXXXX $dkim_sig\n";
     return $dkim_sig . $total_mail;
 }
 
