@@ -3,7 +3,7 @@ use warnings;
 use Test::More;
 use Mail::DKIM::Iterator;
 
-plan tests => 18;
+plan tests => 19;
 
 # basic tests with different canonicalizations and algorithms
 for my $c (qw(
@@ -99,6 +99,17 @@ for my $c (qw(
 	"DKIM key invalid syntax");
 }
 
+# expect verification perm-fail because DKIM key has invalid syntax
+{
+    my $ok = eval {
+	my $m = sign([mail()], v => '2' );
+	verify([$m],dns());
+    };
+    my $err = $@ || ($ok ? '':'unknown error');
+    is( $err,"status status=permerror error=invalid DKIM-Signature header: bad DKIM signature version: 2 a=rsa-sha256\n",
+	"DKIM signature invalid syntax");
+}
+
 
 ############################################################################
 # functions
@@ -108,6 +119,7 @@ for my $c (qw(
 sub sign {
     my ($mail,%args) = @_;
     push @$mail,'';
+    my $v = delete $args{v};
     my $dkim = Mail::DKIM::Iterator->new( sign => {
 	d => 'example.com',
 	s => 'good',
@@ -135,6 +147,7 @@ sub sign {
     $rv->[0]->status == DKIM_PASS
 	or die "unexpected status ".( $rv->[0]->status // '<undef>' )."\n";
     my $dkim_sig = $rv->[0]->signature;
+    $dkim_sig =~s{\bv=1;}{v=$v} if defined $v;
     return $dkim_sig . $total_mail;
 }
 

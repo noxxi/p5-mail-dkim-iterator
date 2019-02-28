@@ -1,7 +1,7 @@
 package Mail::DKIM::Iterator;
 use v5.10.0;
 
-our $VERSION = '1.004';
+our $VERSION = '1.005';
 
 use strict;
 use warnings;
@@ -191,6 +191,18 @@ sub _compute_result {
 	    next;
 	}
 
+	if ($sig->{error}) {
+	    # something wrong with the DKIM-Signature header, return error
+	    push @rv, $sig->{':result'} =
+		Mail::DKIM::Iterator::VerifyRecord->new(
+		    $sig,
+		    ($sig->{s}//'UNKNOWN')."_domainkey".($sig->{d}//'UNKNOWN'),
+		    DKIM_PERMERROR,
+		    $sig->{error}
+		);
+	    next;
+	}
+
 	if (!$sig->{b}) {
 	    # sig is not for verification but for signing
 	    if (!$sig->{'bh:computed'}) {
@@ -206,18 +218,6 @@ sub _compute_result {
 			    : ($sig,undef,DKIM_FAIL,$err)
 		    );
 	    }
-	    next;
-	}
-
-	if ($sig->{error}) {
-	    # something wrong with the DKIM-Signature header, return error
-	    push @rv, $sig->{':result'} =
-		Mail::DKIM::Iterator::VerifyRecord->new(
-		    $sig,
-		    ($sig->{s}//'UNKNOWN')."_domainkey".($sig->{d}//'UNKNOWN'),
-		    DKIM_PERMERROR,
-		    $sig->{error}
-		);
 	    next;
 	}
 
@@ -862,7 +862,7 @@ sub authentication_results {
     return if ! $self->[2];
     my $ar = "dkim=$self->[2]";
     $ar .= " ($self->[3])" if defined $self->[3] and $self->[3] ne '';
-    $ar .= " header.d=".$self->[0]{d};
+    $ar .= " header.d=".( $self->[0]{d} // 'unknown');
     return $ar;
 }
 
