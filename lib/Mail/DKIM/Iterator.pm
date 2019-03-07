@@ -529,7 +529,7 @@ sub _verify_sig {
 	}) or die [DKIM_PERMERROR,"using public key failed"];
 	$rsa->use_no_padding;
 	my $bencrypt = eval { $rsa->encrypt($sig->{'b:bin'}) }
-	    or die die [DKIM_PERMERROR,"header sig corrupt"];
+	    or die [DKIM_PERMERROR,"header sig corrupt"];
 	my $expect = _emsa_pkcs1_v15(
 	    $sig->{'a:hash'},$sig->{'h:hash'},$rsa->size);
 	if ($expect ne $bencrypt) {
